@@ -11,6 +11,6 @@
     "jsx": "react",
     "moduleResolution": "node"
   },
-  "include": ["basics/**/*"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules"]
 }
