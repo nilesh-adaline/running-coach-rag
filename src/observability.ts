@@ -221,13 +221,15 @@ export async function submitTrace(trace: Trace): Promise<void> {
   });
 
   try {
+    const payload = { projectId, trace: tracePayload, spans: spansPayload };
+    
     const response = await fetch(`${LOGS_BASE_URL}/trace`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${ADALINE_API_KEY}`,
       },
-      body: JSON.stringify({ projectId, trace: tracePayload, spans: spansPayload }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
