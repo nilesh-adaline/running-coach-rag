@@ -15,9 +15,9 @@ const apiKey = process.env.ADALINE_API_KEY;
 if (!apiKey)
     throw new Error('ADX_KEY missing');
 // Replace with your values
-exports.PROMPT_ID = 'e1dfa38e-edf6-4e17-b411-55aeb9bda22c';
-const deploymentEnvironmentId = '8dc71e24-c484-4f43-a094-3693409107f2';
-exports.PROJECT_ID = 'e7c011ac-45bc-47a2-85b2-6d0080ea9242';
+exports.PROMPT_ID = '3387c27c-d736-4bda-b30f-8494944d0b58';
+const deploymentEnvironmentId = 'f73930f4-21d1-486d-a4b8-66bee70615c8';
+exports.PROJECT_ID = '843c9aa0-f1a9-4c29-b742-b8eaccd7f1a1';
 const baseUrl = 'https://api.staging.adaline.ai/v2/deployments';
 const url = `${baseUrl}?promptId=${exports.PROMPT_ID}&deploymentEnvironmentId=${deploymentEnvironmentId}&deploymentId=latest`;
 // Cache the latest deployed prompt to avoid repeated network calls

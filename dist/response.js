@@ -73,13 +73,18 @@ async function assembleAugmentedPrompt(trace, coachTemplate, userQuery) {
             type: 'Function',
             input: {
                 operation: 'augment_prompt_with_retrieval_context',
+                coachTemplate: coachTemplate,
+                userQuery: userQuery,
                 snippetsIncluded: snippets.length,
+                retrievedSnippets: snippets,
                 coachTemplateLength: coachTemplate.length,
                 userQueryLength: userQuery.length,
                 contextSnippetsLengths: snippets.map(s => s.length),
                 totalContextLength: snippets.reduce((sum, s) => sum + s.length, 0),
             },
             output: {
+                systemMessage: systemMessage,
+                userMessage: userMessage,
                 systemMessageLength: systemMessage.length,
                 userMessageLength: userMessage.length,
                 components: ['coach_template', 'user_query', 'retrieval_context', 'instructions'],
