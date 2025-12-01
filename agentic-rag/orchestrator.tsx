@@ -600,7 +600,7 @@ export async function orchestrateAgenticRAG(
     const estimatedCost = estimateCost(model, inputTokens, outputTokens);
     
     // Prepare input payload matching response.tsx format
-    const inputPayload = {
+    const inputPayload: any = {
       model,
       max_tokens: settings?.max_output_tokens || settings?.maxTokens || 4096,
       temperature: settings?.temperature || 1,
@@ -621,6 +621,12 @@ export async function orchestrateAgenticRAG(
         },
       ],
     };
+    
+    // Include all other settings (seed, top_p, etc.) if present
+    if (settings?.seed !== undefined) inputPayload.seed = settings.seed;
+    if (settings?.top_p !== undefined) inputPayload.top_p = settings.top_p;
+    if (settings?.frequency_penalty !== undefined) inputPayload.frequency_penalty = settings.frequency_penalty;
+    if (settings?.presence_penalty !== undefined) inputPayload.presence_penalty = settings.presence_penalty;
     
     // Prepare output payload matching response.tsx Adaline MessageType format
     const outputPayload = {
