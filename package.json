@@ -4,8 +4,10 @@
     "@adaline/gateway": "^1.10.0",
     "@adaline/openai": "^1.10.0",
     "@adaline/types": "^1.9.1",
+    "@openai/agents": "^0.3.3",
     "@pinecone-database/pinecone": "^6.1.3",
     "dotenv": "^17.2.3",
+    "openai": "^6.9.1",
     "pdf-parse": "^1.1.4"
   },
   "devDependencies": {
