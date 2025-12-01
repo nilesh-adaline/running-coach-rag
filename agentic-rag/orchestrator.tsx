@@ -265,6 +265,8 @@ export async function orchestrateAgenticRAG(
   let status: 'success' | 'error' = 'success';
   let finalResponse = '';
   let agentRunStart = 0;
+  let agentRunEnd = 0;
+  let agentLifecycleEnd = 0;
   // Track final instructions used (augmented when RAG is applied)
   let finalSystemMessage = systemMessage;
   let augmentedPromptDetails: { ragSummary: string; topK: number; query: string } | null = null;
@@ -358,15 +360,7 @@ export async function orchestrateAgenticRAG(
     });
     console.log(`  [SPAN] query_routing (child of agent_orchestrator)`);
 
-    // Log agent creation span
-    const agentCreateStart = now();
-    // Include only deployed tools; RAG will be called directly when needed
-    const agentTools = [
-      ...deployedTools.map((tool) => createAgentTool(tool, orchestratorRefId, toolExecutionPhaseRefId)),
-    ];
-    console.log('\n1️⃣  Creating Agent...');
-    
-    // RAG Phase (if needed)
+    // RAG Phase (if needed) - starts AFTER query_routing completes
     if (userRequestsRAG) {
       const ragPhaseStart = now();
       const ragPhaseRefId = uuidv4();
@@ -471,6 +465,14 @@ export async function orchestrateAgenticRAG(
       }
     }
 
+    // Agent creation starts AFTER query_routing and RAG (if applicable) complete
+    const agentCreateStart = now();
+    // Include only deployed tools; RAG will be called directly when needed
+    const agentTools = [
+      ...deployedTools.map((tool) => createAgentTool(tool, orchestratorRefId, toolExecutionPhaseRefId)),
+    ];
+    console.log('\n1️⃣  Creating Agent...');
+
     const agent = new Agent({
       name: 'Running Coach Agent',
       model,
@@ -511,8 +513,13 @@ export async function orchestrateAgenticRAG(
     // Tool execution phase - wrap the agent run
     const toolExecPhaseStart = now();
     console.log('   Running agent with user message...');
+    
+    // Capture actual LLM call timing
+    agentRunStart = now();
     const result = await run(agent, userMessage);
     finalResponse = result.finalOutput || '';
+    agentRunEnd = now();
+    
     const toolExecPhaseEnd = now();
     
     // Add tool_execution_phase span (parent of all tool calls/responses)
@@ -536,7 +543,8 @@ export async function orchestrateAgenticRAG(
     
     // Synthesis phase removed (decorative)
     
-    const agentExecutionEnd = now();
+    // Capture agent_execution end time immediately after tool phase completes
+    const agentExecutionEnd = toolExecPhaseEnd;
     console.log('   ✓ Agent completed');
     
     // Add agent_execution span
@@ -559,7 +567,8 @@ export async function orchestrateAgenticRAG(
     console.log(`    [SPAN] agent_execution (child of agent_lifecycle)`);
 
     // Log agent_lifecycle parent span (encompasses create_agent + agent_execution)
-    const agentLifecycleEnd = now();
+    // End time should be right after agent_execution completes
+    agentLifecycleEnd = agentExecutionEnd;
     addSpanToTrace({
       name: 'agent_lifecycle',
       status: 'success',
@@ -582,13 +591,99 @@ export async function orchestrateAgenticRAG(
     });
     console.log(`   [SPAN] agent_lifecycle (child of agent_orchestrator)`);
 
+    // Add final_response span - represents complete agent.run() (planning + tools + synthesis)
+    // This is a sibling of agent_lifecycle, positioned chronologically after it
+    const inputMsgStr = `${finalSystemMessage}\n\n${userMessage}`;
+    const inputTokens = estimateTokens(inputMsgStr);
+    const outputTokens = estimateTokens(finalResponse);
+    const totalTokens = inputTokens + outputTokens;
+    const estimatedCost = estimateCost(model, inputTokens, outputTokens);
+    
+    // Prepare input payload matching response.tsx format
+    const inputPayload = {
+      model,
+      max_tokens: settings?.max_output_tokens || settings?.maxTokens || 4096,
+      temperature: settings?.temperature || 1,
+      messages: [
+        {
+          role: 'system',
+          content: [{
+            type: 'text',
+            text: finalSystemMessage,
+          }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: userMessage,
+          }],
+        },
+      ],
+    };
+    
+    // Prepare output payload matching response.tsx Adaline MessageType format
+    const outputPayload = {
+      messages: [{
+        role: 'assistant',
+        content: [{
+          modality: 'text',
+          value: finalResponse,
+        }],
+      }],
+      tokenUsage: {
+        promptTokens: inputTokens,
+        completionTokens: outputTokens,
+        totalTokens: totalTokens,
+      },
+    };
+    
+    // Prepare variables in Adaline ContentType format from prompt template variables
+    const variables: Record<string, { modality: string; value: string }> = {};
+    if (promptVariables) {
+      for (const [key, val] of Object.entries(promptVariables)) {
+        variables[key] = {
+          modality: 'text',
+          value: String(val),
+        };
+      }
+    }
+    
+    addSpanToTrace({
+      name: 'final_response',
+      status: 'success',
+      referenceId: uuidv4(),
+      parentReferenceId: orchestratorRefId,
+      startedAt: agentRunStart,
+      endedAt: agentRunEnd,
+      content: {
+        type: 'Model',
+        provider: 'openai',
+        model,
+        variables: Object.keys(variables).length > 0 ? variables : undefined,
+        input: inputPayload,
+        output: outputPayload,
+      },
+      promptId: PROMPT_ID,
+      runEvaluation: true,
+      cost: estimatedCost || undefined,
+      tokens: {
+        input: inputTokens,
+        output: outputTokens,
+        total: totalTokens,
+      },
+    });
+    console.log(`   [SPAN] final_response (child of agent_orchestrator) - complete agent work`);
+
   } catch (error) {
     status = 'error';
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`\n❌ Orchestrator error: ${errorMessage}`);
     throw error;
   } finally {
-    let orchestratorEnd = now();
+    // Capture end time from when the actual work completed (agentLifecycleEnd if available)
+    // This prevents the finally block execution time from inflating the orchestrator duration
+    let orchestratorEnd = agentLifecycleEnd || now();
 
     // Add orchestrator span (child of CLI orchestrator if provided, otherwise root)
     addSpanToTrace({
@@ -614,99 +709,6 @@ export async function orchestrateAgenticRAG(
       },
     });
     console.log(`  [SPAN] agent_orchestrator (${cliOrchestratorRefId ? 'child of CLI orchestrator' : 'root'})`);
-
-    // Add final LLM output span
-    if (status === 'success') {
-      // Ensure this span appears last by using timestamps right after orchestrator
-      const finalSpanRefId = uuidv4();
-      const finalSpanStart = orchestratorEnd;
-      const finalSpanEnd = finalSpanStart + 1;
-      const inputMsgStr = `${finalSystemMessage}\n\n${userMessage}`;
-      const inputTokens = estimateTokens(inputMsgStr);
-      const outputTokens = estimateTokens(finalResponse);
-      const totalTokens = inputTokens + outputTokens;
-      const estimatedCost = estimateCost(model, inputTokens, outputTokens);
-      
-      // Prepare input payload matching response.tsx format
-      const inputPayload = {
-        model,
-        max_tokens: settings?.max_output_tokens || settings?.maxTokens || 4096,
-        temperature: settings?.temperature || 1,
-        messages: [
-          {
-            role: 'system',
-            content: [{
-              type: 'text',
-              text: finalSystemMessage,
-            }],
-          },
-          {
-            role: 'user',
-            content: [{
-              type: 'text',
-              text: userMessage,
-            }],
-          },
-        ],
-      };
-      
-      // Prepare output payload matching response.tsx Adaline MessageType format
-      const outputPayload = {
-        messages: [{
-          role: 'assistant',
-          content: [{
-            modality: 'text',
-            value: finalResponse,
-          }],
-        }],
-        tokenUsage: {
-          promptTokens: inputTokens,
-          completionTokens: outputTokens,
-          totalTokens: totalTokens,
-        },
-      };
-      
-      // Prepare variables in Adaline ContentType format from prompt template variables
-      const variables: Record<string, { modality: string; value: string }> = {};
-      if (promptVariables) {
-        for (const [key, val] of Object.entries(promptVariables)) {
-          variables[key] = {
-            modality: 'text',
-            value: String(val),
-          };
-        }
-      }
-      
-      addSpanToTrace({
-        name: 'final_response',
-        status: 'success',
-        referenceId: finalSpanRefId,
-        parentReferenceId: orchestratorRefId,
-        startedAt: finalSpanStart,
-        endedAt: finalSpanEnd,
-        content: {
-          type: 'Model',
-          provider: 'openai',
-          model,
-          variables: Object.keys(variables).length > 0 ? variables : undefined,
-          input: inputPayload,
-          output: outputPayload,
-        },
-        promptId: PROMPT_ID,
-        runEvaluation: true,
-        cost: estimatedCost,
-        tokens: {
-          input: inputTokens,
-          output: outputTokens,
-          total: totalTokens,
-        },
-      });
-      console.log(`   [SPAN] final_response (child of agent_orchestrator)`);
-      // Quality validation removed (decorative)
-      
-      // Extend orchestrator end to include final span for proper containment
-      orchestratorEnd = finalSpanEnd;
-    }
   }
 
   return {

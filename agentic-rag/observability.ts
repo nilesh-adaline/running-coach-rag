@@ -128,6 +128,11 @@ export async function submitTrace(trace: Trace): Promise<void> {
       content.provider = c.provider ?? 'openai';
       content.model = c.model ?? '';
       
+      // Add cost for Model type (per API spec - only supported for Model)
+      if (s.cost !== undefined) {
+        content.cost = s.cost;
+      }
+      
       if (c.output !== undefined) {
         const outputObj = typeof c.output === 'object' ? c.output : JSON.parse(JSON.stringify(c.output));
         const parsed = typeof outputObj === 'string' ? JSON.parse(outputObj || '{}') : outputObj;
