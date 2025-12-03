@@ -129,8 +129,11 @@ export async function submitTrace(trace: Trace): Promise<void> {
       content.model = c.model ?? '';
       
       // Add cost for Model type (per API spec - only supported for Model)
-      if (s.cost !== undefined) {
+      if (s.cost !== undefined && s.cost !== null) {
         content.cost = s.cost;
+        console.log(`[DEBUG] Adding cost to Model span "${s.name}": ${s.cost}`);
+      } else {
+        console.log(`[DEBUG] No cost for Model span "${s.name}": cost=${s.cost}`);
       }
       
       if (c.output !== undefined) {
@@ -181,6 +184,13 @@ export async function submitTrace(trace: Trace): Promise<void> {
 
   try {
     const payload = { projectId: trace.projectId, trace: tracePayload, spans: spansPayload };
+    
+    // Debug: log final_response span structure
+    const finalResponseSpan = spansPayload.find(s => s.name === 'final_response');
+    if (finalResponseSpan) {
+      console.log('\n=== DEBUG: final_response span structure ===');
+      console.log(JSON.stringify(finalResponseSpan, null, 2));
+    }
     
     const response = await fetch(`${LOGS_BASE}/trace`, {
       method: 'POST',

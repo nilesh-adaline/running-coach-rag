@@ -247,7 +247,8 @@ export async function orchestrateAgenticRAG(
   deployedTools: any[],
   settings?: Record<string, any>,
   promptVariables?: Record<string, any>,
-  cliOrchestratorRefId?: string
+  cliOrchestratorRefId?: string,
+  deploymentId?: string
 ): Promise<{
   finalResponse: string;
 }> {
@@ -671,6 +672,7 @@ export async function orchestrateAgenticRAG(
         output: outputPayload,
       },
       promptId: PROMPT_ID,
+      deploymentId: deploymentId,
       runEvaluation: true,
       cost: estimatedCost || undefined,
       tokens: {
@@ -827,7 +829,8 @@ if (require.main === module) {
       info.tools,  // Use deployed tools
       info.settings, // Use deployed settings
       DEFAULT_VARIABLES, // Pass prompt variables for observability
-      orchestrationRefId // Pass parent reference for internal orchestrator
+      orchestrationRefId, // Pass parent reference for internal orchestrator
+      info.deploymentId // Pass deploymentId for dataset integration
     );
 
     console.log('\n' + '='.repeat(80));
