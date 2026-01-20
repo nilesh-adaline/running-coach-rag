@@ -121,7 +121,7 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
 }
 
 // Query Pinecone with top-k matches using the full prompt.
-export async function retrieveTopK(k = 5, trace?: Trace, fullPromptOverride?: string, parentReferenceId?: string) {
+export async function retrieveTopK(k = 10, trace?: Trace, fullPromptOverride?: string, parentReferenceId?: string) {
   if (!process.env.PINECONE_API_KEY) {
     throw new Error('PINECONE_API_KEY missing');
   }

@@ -182,34 +182,79 @@ export async function submitTrace(trace: Trace): Promise<void> {
     return spanPayload;
   });
 
-  try {
-    const payload = { projectId: trace.projectId, trace: tracePayload, spans: spansPayload };
-    
-    // Debug: log final_response span structure
-    const finalResponseSpan = spansPayload.find(s => s.name === 'final_response');
-    if (finalResponseSpan) {
-      console.log('\n=== DEBUG: final_response span structure ===');
-      console.log(JSON.stringify(finalResponseSpan, null, 2));
-    }
-    
-    const response = await fetch(`${LOGS_BASE}/trace`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-    });
+  // Retry logic for network errors
+  const maxRetries = 3;
+  const retryDelay = 1000; // Start with 1 second
+  let lastError: any = null;
 
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`Failed to submit trace. Status: ${response.status}. Body: ${errorBody}`);
-    } else {
-      const result: any = await response.json();
-      console.log(`✓ Trace submitted successfully (ID: ${result.traceId || trace.referenceId})`);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const payload = { projectId: trace.projectId, trace: tracePayload, spans: spansPayload };
+      
+      // Debug: log final_response span structure (only on first attempt)
+      if (attempt === 0) {
+        const finalResponseSpan = spansPayload.find(s => s.name === 'final_response');
+        if (finalResponseSpan) {
+          console.log('\n=== DEBUG: final_response span structure ===');
+          console.log(JSON.stringify(finalResponseSpan, null, 2));
+        }
+      }
+      
+      // Create AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
+      const response = await fetch(`${LOGS_BASE}/trace`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        const errorMsg = `Failed to submit trace. Status: ${response.status}. Body: ${errorBody}`;
+        if (attempt < maxRetries) {
+          console.warn(`${errorMsg} (Attempt ${attempt + 1}/${maxRetries + 1}, retrying...)`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay * Math.pow(2, attempt)));
+          continue;
+        } else {
+          console.error(errorMsg);
+          return;
+        }
+      } else {
+        const result: any = await response.json();
+        console.log(`✓ Trace submitted successfully (ID: ${result.traceId || trace.referenceId})`);
+        return; // Success, exit retry loop
+      }
+    } catch (error: any) {
+      lastError = error;
+      const isNetworkError = error?.code === 'ECONNRESET' || 
+                            error?.code === 'ECONNREFUSED' || 
+                            error?.code === 'ENOTFOUND' ||
+                            error?.name === 'AbortError' ||
+                            error?.message?.includes('fetch failed');
+      
+      if (isNetworkError && attempt < maxRetries) {
+        const delay = retryDelay * Math.pow(2, attempt);
+        console.warn(`Network error submitting trace (${error?.code || error?.name || 'unknown'}): ${error?.message || error}. Retrying in ${delay}ms... (Attempt ${attempt + 1}/${maxRetries + 1})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      } else {
+        // Last attempt failed or non-network error
+        if (isNetworkError) {
+          console.warn(`Failed to submit trace after ${maxRetries + 1} attempts due to network error: ${error?.code || error?.name || 'unknown'}. This is non-critical - execution completed successfully.`);
+        } else {
+          console.error("Error submitting trace:", error);
+        }
+        return; // Exit retry loop
+      }
     }
-  } catch (error) {
-    console.error("Error submitting trace:", error);
   }
 }
 
