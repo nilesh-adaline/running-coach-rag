@@ -8,15 +8,20 @@ if (!apiKey) {
   throw new Error('ADALINE_API_KEY missing');
 }
 
-// Agentic RAG deployment configuration
-export const PROMPT_ID = '3b8a5264-dd69-409f-9748-7ac6dfa3772f';
-const deploymentEnvironmentId = 'f73930f4-21d1-486d-a4b8-66bee70615c8';
-const deploymentId = '09c78ec5-4fa3-4200-8f71-68bd153e4c8f';
+// Deployment configuration
 export const PROJECT_ID = '843c9aa0-f1a9-4c29-b742-b8eaccd7f1a1';
-
+const deploymentEnvironmentId = 'f73930f4-21d1-486d-a4b8-66bee70615c8';
 const baseUrl = 'https://api.staging.adaline.ai/v2/deployments';
-// Construct the full URL with required query parameters: promptId, deploymentEnvironmentId, and deploymentId=latest
-const url = `${baseUrl}?promptId=${PROMPT_ID}&deploymentEnvironmentId=${deploymentEnvironmentId}&deploymentId=latest`;
+
+// Prompt configurations
+export const PROMPT_IDS = {
+  AGENTIC_RAG: '3b8a5264-dd69-409f-9748-7ac6dfa3772f',
+  FEELINGS: '10a3201f-5716-48dd-a62e-28356560aed9',
+  FITNESS: '2c7e4ac7-901e-4fe4-8ba4-e1ba7cd7228f',
+} as const;
+
+// For backward compatibility
+export const PROMPT_ID = PROMPT_IDS.AGENTIC_RAG;
 
 // Type definitions for the deployed prompt structure
 export interface DeployedPromptMessage {
@@ -41,13 +46,19 @@ export interface DeployedPrompt {
   };
 }
 
-// Cache the latest deployed prompt to avoid repeated network calls
-let cachedDeployedPrompt: DeployedPrompt | null = null;
+// Cache for deployed prompts (keyed by promptId)
+const promptCache: Map<string, DeployedPrompt> = new Map();
 
 /**
- * Fetch the deployed prompt from Adaline API
+ * Generic function to fetch a deployed prompt from Adaline API
+ * @param promptId - The prompt ID to fetch
+ * @param deploymentEnvironmentId - The deployment environment ID (defaults to shared env)
  */
-export async function fetchDeployedPrompt(): Promise<DeployedPrompt> {
+export async function fetchDeployedPrompt(
+  promptId: string = PROMPT_IDS.AGENTIC_RAG,
+  deploymentEnvironmentId: string = 'f73930f4-21d1-486d-a4b8-66bee70615c8'
+): Promise<DeployedPrompt> {
+  const url = `${baseUrl}?promptId=${promptId}&deploymentEnvironmentId=${deploymentEnvironmentId}&deploymentId=latest`;
   const start = Date.now();
   
   // Retry logic for network errors - increased retries and better handling
@@ -97,7 +108,7 @@ export async function fetchDeployedPrompt(): Promise<DeployedPrompt> {
         }
 
         const data = await response.json() as DeployedPrompt;
-        cachedDeployedPrompt = data;
+        promptCache.set(promptId, data);
         const end = Date.now();
 
         // Span will be added by response.tsx after import
@@ -190,10 +201,25 @@ export async function fetchDeployedPrompt(): Promise<DeployedPrompt> {
 
 /**
  * Returns the latest deployed prompt, using cache when available.
+ * @param promptId - The prompt ID to fetch (defaults to AGENTIC_RAG)
  */
-export async function getLatestDeployedPrompt(): Promise<DeployedPrompt> {
-  if (cachedDeployedPrompt) return cachedDeployedPrompt;
-  return fetchDeployedPrompt();
+export async function getLatestDeployedPrompt(promptId: string = PROMPT_IDS.AGENTIC_RAG): Promise<DeployedPrompt> {
+  if (promptCache.has(promptId)) return promptCache.get(promptId)!;
+  return fetchDeployedPrompt(promptId);
+}
+
+/**
+ * Fetch the Feelings prompt deployment
+ */
+export async function fetchFeelingsPrompt(): Promise<DeployedPrompt> {
+  return fetchDeployedPrompt(PROMPT_IDS.FEELINGS);
+}
+
+/**
+ * Fetch the Fitness prompt deployment
+ */
+export async function fetchFitnessPrompt(): Promise<DeployedPrompt> {
+  return fetchDeployedPrompt(PROMPT_IDS.FITNESS);
 }
 
 /**
@@ -266,11 +292,36 @@ export function injectVariables(template: string, variables: Record<string, any>
 }
 
 /**
- * Default variables for agentic RAG query
+ * Default variables for Head Coach prompt
+ * Variables: RUN_BLOCK, WHAT_TO_COVER, CONTEXT, WORKOUT_SPLITS, ADVICE
  */
-export const DEFAULT_QUERY_VARIABLES = {
-  USER_QUERY: 'What are the best practices for recovery runs?',
+export const DEFAULT_AGENTIC_RAG_VARIABLES = {
+  RUN_BLOCK: 'Base Building Phase',
+  WHAT_TO_COVER: 'Training principles and recovery strategies',
+  CONTEXT: 'User is a beginner runner preparing for their first 5K',
+  WORKOUT_SPLITS: '3 runs per week',
+  ADVICE: 'Focus on consistency over intensity',
 };
+
+/**
+ * Default variables for Feelings prompt
+ * Variables: NOTES
+ */
+export const DEFAULT_FEELINGS_VARIABLES = {
+  NOTES: 'Runner feels tired after yesterday\'s long run. Experiencing some knee discomfort but motivated to continue training.',
+};
+
+/**
+ * Default variables for Fitness prompt
+ * Variables: RUN_BLOCK, WHAT_TO_COVER
+ */
+export const DEFAULT_FITNESS_VARIABLES = {
+  RUN_BLOCK: 'Base Building Phase',
+  WHAT_TO_COVER: 'Strength training and mobility exercises',
+};
+
+// For backward compatibility
+export const DEFAULT_QUERY_VARIABLES = DEFAULT_AGENTIC_RAG_VARIABLES;
 
 /**
  * Get the user query with variables already injected.
@@ -281,48 +332,60 @@ export async function getInjectedUserQuery(): Promise<string> {
   return injectVariables(userMessageTemplate, DEFAULT_QUERY_VARIABLES);
 }
 
-// CLI runner - fetch and display the deployed prompt
+/**
+ * Helper function to display prompt details
+ */
+function displayPromptDetails(name: string, deployedPrompt: DeployedPrompt) {
+  console.log(`\n=== ${name} Prompt ===`);
+  console.log(`  Model: ${deployedPrompt.prompt.config.model}`);
+  console.log(`  Provider: ${deployedPrompt.prompt.config.providerName}`);
+  console.log(`  Deployment ID: ${deployedPrompt.id}`);
+  console.log(`  Prompt ID: ${deployedPrompt.promptId}`);
+  console.log(`  Tools count: ${(deployedPrompt.prompt.tools || []).length}`);
+  
+  const systemMessage = extractSystemMessage(deployedPrompt);
+  const userMessage = extractUserMessage(deployedPrompt);
+  const variables = extractVariables(deployedPrompt);
+  
+  console.log('\n  System Message:');
+  console.log(`  ${systemMessage.substring(0, 150)}...`);
+  
+  console.log('\n  User Message Template:');
+  console.log(`  ${userMessage.substring(0, 150)}...`);
+  
+  console.log('\n  Variables:');
+  variables.forEach(v => console.log(`    - ${v}`));
+  
+  if (deployedPrompt.prompt.tools && deployedPrompt.prompt.tools.length > 0) {
+    console.log('\n  Tools:');
+    deployedPrompt.prompt.tools.forEach((tool, idx) => {
+      console.log(`    ${idx + 1}. ${tool.function?.name || tool.name || 'unnamed'}`);
+    });
+  }
+}
+
+// CLI runner - fetch and display all prompts
 if (require.main === module) {
   (async () => {
     try {
-      console.log('Fetching Agentic RAG Payload from Adaline...\n');
+      console.log('Fetching all prompts from Adaline...\n');
       
-      const deployedPrompt = await fetchDeployedPrompt();
+      // Fetch Head Coach prompt
+      console.log('Fetching Head Coach prompt...');
+      const agenticRagPrompt = await fetchDeployedPrompt(PROMPT_IDS.AGENTIC_RAG);
+      displayPromptDetails('Head Coach', agenticRagPrompt);
       
-      console.log('✓ Payload fetched successfully');
-      console.log(`  Model: ${deployedPrompt.prompt.config.model}`);
-      console.log(`  Provider: ${deployedPrompt.prompt.config.providerName}`);
-      console.log(`  Deployment ID: ${deploymentId}`);
-      console.log(`  Tools count: ${(deployedPrompt.prompt.tools || []).length}\n`);
+      // Fetch Feelings prompt
+      console.log('\n\nFetching Feelings prompt...');
+      const feelingsPrompt = await fetchFeelingsPrompt();
+      displayPromptDetails('Feelings', feelingsPrompt);
       
-      const systemMessage = extractSystemMessage(deployedPrompt);
-      const userMessage = extractUserMessage(deployedPrompt);
-      const variables = extractVariables(deployedPrompt);
+      // Fetch Fitness prompt
+      console.log('\n\nFetching Fitness prompt...');
+      const fitnessPrompt = await fetchFitnessPrompt();
+      displayPromptDetails('Fitness', fitnessPrompt);
       
-      console.log('=== System Message Template ===');
-      console.log(systemMessage);
-      
-      console.log('\n=== User Message Template ===');
-      console.log(userMessage);
-      
-      console.log('\n=== Variables ===');
-      console.log(variables);
-      
-      console.log('\n=== Tools ===');
-      const tools = deployedPrompt.prompt.tools || [];
-      tools.forEach((tool, idx) => {
-        console.log(`${idx + 1}. ${tool.function?.name || tool.name || 'unnamed'}`);
-        if (tool.function?.description) {
-          console.log(`   Description: ${tool.function.description.substring(0, 100)}...`);
-        }
-      });
-      
-      console.log('\n=== Example with Variable Injection ===');
-      const customVariables = {
-        USER_QUERY: "How should I structure my training for a marathon in 12 weeks?"
-      };
-      const injectedMessage = injectVariables(userMessage, customVariables);
-      console.log(injectedMessage);
+      console.log('\n\n✓ All prompts fetched successfully!');
       
     } catch (error: any) {
       console.error('Error:', error.message);

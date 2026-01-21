@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import { Pinecone } from '@pinecone-database/pinecone';
-import { OpenAI } from '@adaline/openai';
 import { Gateway } from '@adaline/gateway';
 import { Config } from '@adaline/types';
 import { readFile, readdir } from 'fs/promises';
@@ -15,7 +14,6 @@ const PINECONE_ENDPOINT = process.env.PINECONE_ENDPOINT || 'https://adx-test-app
 const PINECONE_DIMENSION = 1024;
 
 const pinecone = new Pinecone({ apiKey: process.env.PINECONE_API_KEY || '' });
-const openai = new OpenAI();
 const gateway = new Gateway();
 
 // Deterministic block-averaging projection (matches src/createDB.tsx logic)
@@ -50,6 +48,9 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
   const apiKey = process.env.OAI_API_KEY;
   if (!apiKey) throw new Error('OAI_API_KEY is required in the environment');
 
+  // Dynamically import OpenAI to avoid module load-time validation errors
+  const { OpenAI } = await import('@adaline/openai');
+  const openai = new OpenAI();
   const modelName = 'text-embedding-3-small';
   const model = openai.embeddingModel({ modelName, apiKey });
   const config = Config().parse({});
@@ -57,6 +58,9 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
   let status: 'success' | 'error' = 'success';
   let errorMessage = '';
   let originalDimension = 0;
+  let actualCost = 0;
+  let actualTokens = 0;
+  let actualLatency = 0;
 
   try {
     const resp: any = await gateway.getEmbeddings({
@@ -64,6 +68,22 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
       config,
       embeddingRequests: { modality: 'text', requests: [text] },
     });
+
+    const endTime = Date.now();
+    actualLatency = endTime - startTime;
+
+    // Extract actual metrics from Gateway response
+    const usage = resp?.response?.usage || resp?.usage;
+    actualTokens = usage?.total_tokens || usage?.totalTokens || usage?.tokens || 0;
+    actualCost = resp?.response?.cost || resp?.cost || 0;
+
+    // Log Gateway metrics
+    if (actualTokens > 0) {
+      console.log(`  [Gateway Embeddings] ${actualTokens} tokens, ${actualLatency}ms latency`);
+      if (actualCost > 0) {
+        console.log(`  [Gateway Embeddings] Cost: $${actualCost.toFixed(6)}`);
+      }
+    }
 
     const items = resp?.response?.embeddings;
     if (!items || items.length === 0) throw new Error('No embeddings returned from gateway');
@@ -81,8 +101,10 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
   } finally {
     if (trace) {
       const endTime = Date.now();
-      const estimatedTokens = Math.ceil(text.length * 0.25); // ~0.25 tokens/char
-      const embeddingCost = (estimatedTokens / 1000) * 0.00002; // text-embedding-3-small pricing
+      const latency = actualLatency || (endTime - startTime);
+      // Use Gateway's actual cost if available, otherwise estimate
+      const embeddingCost = actualCost > 0 ? actualCost : (Math.ceil(text.length * 0.25) / 1000) * 0.00002;
+      const tokens = actualTokens || Math.ceil(text.length * 0.25);
 
       addSpan(trace, {
         name: 'create_embeddings',
@@ -98,7 +120,7 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
             texts: [text],
             textLength: text.length,
             textWordCount: text.split(/\s+/).length,
-            estimatedTokens,
+            tokens,
           },
           output: {
             embeddings: [finalEmb],
@@ -109,10 +131,19 @@ export async function createQueryEmbedding(text: string, trace?: Trace, parentRe
             embeddingModel: modelName,
             vectorNorm: Math.sqrt(finalEmb.reduce((sum, val) => sum + val * val, 0)),
             error: errorMessage || undefined,
+            latency: latency, // Add latency to output for visibility
           },
         },
         promptId: PROMPT_ID,
         cost: embeddingCost,
+        ...(actualTokens > 0 ? {
+          tokens: {
+            total: actualTokens,
+          }
+        } : {}),
+        attributes: {
+          latency: latency, // Also add to attributes for querying
+        },
       });
     }
   }

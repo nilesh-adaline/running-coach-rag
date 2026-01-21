@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDeploymentInfo, getLatestDeployedPrompt, PROMPT_ID, PROJECT_ID } from './fetchPayload';
 import { createTrace, addSpan, submitTrace, now, Trace } from './observability';
 import { nutrition_planner, weather_checker } from './tool-handler';
-import { getInjectedMessages } from './prompt';
+import { getInjectedMessages } from './prompts/headCoach';
 import { retrieveTopK, readChunkContent, parseMatchMetadata } from './retrieve';
 
 // Global trace to collect all spans
