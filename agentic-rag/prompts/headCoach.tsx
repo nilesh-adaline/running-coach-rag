@@ -15,7 +15,7 @@ export function injectVariables(template: string, variables: Record<string, any>
 export const DEFAULT_VARIABLES = {
   RUN_BLOCK: '8km tempo run this Thursday at 5:00 PM in Austin, Texas',
   WHAT_TO_COVER: 're-run Nutrition, During-run Fueling & Hydration, Post-run Recovery Meal',
-  CONTEXT: 'Help me with Half marathon prep, use rag, tempo pace target is 4:30/km. Running after work, last meal at noon (office lunch). Hot climate, usually 28-32°C in afternoons. I sweat heavily. Advanced runner but new to structured fueling. Vegan diet. No injuries. Need practical foods I can prep quickly or buy near my office.'
+  CONTEXT: 'Help me with Half marathon prep, tempo pace target is 4:30/km. Running after work, last meal at noon (office lunch). Hot climate, usually 28-32°C in afternoons. I sweat heavily. Advanced runner but new to structured fueling. Vegan diet. No injuries. Need practical foods I can prep quickly or buy near my office.'
 };
 
 // Fetches system & user templates from the deployed payload

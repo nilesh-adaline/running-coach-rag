@@ -394,7 +394,8 @@ export function logLLMSpan(
   actualOutputTokens?: number,
   actualTotalTokens?: number,
   actualCost?: number,
-  actualLatency?: number
+  actualLatency?: number,
+  variables?: Record<string, { modality: string; value: string }>
 ) {
   // Use actual token counts if available, otherwise estimate
   const inputTokens = actualInputTokens ?? estimateTokens(systemMessage + '\n\n' + userMessage);
@@ -418,6 +419,7 @@ export function logLLMSpan(
       type: 'Model',
       provider: 'openai',
       model,
+      variables: variables && Object.keys(variables).length > 0 ? variables : undefined,
       input: {
         messages: [
           { role: 'system', content: systemMessage },
@@ -431,6 +433,7 @@ export function logLLMSpan(
     },
     promptId,
     deploymentId,
+    runEvaluation: true, // Enable continuous evaluation for all LLM spans
     cost: (cost !== undefined && cost !== null && cost > 0) ? cost : undefined,
     tokens: {
       input: inputTokens,
@@ -1669,7 +1672,13 @@ export async function orchestrateMultiAgentWithHandoffs(
     });
 
     // Helper function to call Fitness Agent
-    const callFitnessAgent = async (args: { CONTEXT: string; RUN_BLOCK: string; WHAT_TO_COVER: string }) => {
+    const callFitnessAgent = async (args: { CONTEXT: string; RUN_BLOCK: string; WHAT_TO_COVER: string }): Promise<{
+      workoutPlan: string;
+      cost?: number;
+      latency?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+    }> => {
         const handoffStart = now();
         const handoffRefId = uuidv4();
         console.log(`\n🔄 Handoff to Fitness Agent...`);
@@ -1728,6 +1737,13 @@ ${args.CONTEXT}`;
           const fitnessOutputTokens = fitnessUsage?.outputTokens || fitnessUsage?.completion_tokens || fitnessUsage?.completionTokens;
           const fitnessTotalTokens = fitnessUsage?.totalTokens || fitnessUsage?.total_tokens;
           
+          // Prepare variables for Fitness Agent
+          const fitnessVariables: Record<string, { modality: string; value: string }> = {
+            CONTEXT: { modality: 'text', value: args.CONTEXT },
+            RUN_BLOCK: { modality: 'text', value: args.RUN_BLOCK },
+            WHAT_TO_COVER: { modality: 'text', value: args.WHAT_TO_COVER },
+          };
+          
           // Log LLM span for Fitness Agent (with actual usage from Gateway) - child of agent call span
           logLLMSpan(
             'fitness_agent_llm',
@@ -1744,7 +1760,8 @@ ${args.CONTEXT}`;
             fitnessOutputTokens,
             fitnessTotalTokens,
             fitnessResult.cost,
-            fitnessResult.latency
+            fitnessResult.latency,
+            fitnessVariables
           );
           
           const handoffEnd = now();
@@ -1771,7 +1788,13 @@ ${args.CONTEXT}`;
           console.log(`     [SPAN] call_fitness_agent (child of hardcoded_orchestration)`);
           console.log(`     [SPAN] fitness_agent_llm (child of call_fitness_agent)`);
           
-          return workoutPlan;
+          return {
+            workoutPlan,
+            cost: fitnessResult.cost,
+            latency: fitnessResult.latency,
+            inputTokens: fitnessInputTokens,
+            outputTokens: fitnessOutputTokens,
+          };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           console.error(`   ✗ Fitness Agent error: ${errorMessage}`);
@@ -1780,7 +1803,13 @@ ${args.CONTEXT}`;
       };
 
     // Helper function to call Feelings Agent
-    const callFeelingsAgent = async (args: { NOTES: string }) => {
+    const callFeelingsAgent = async (args: { NOTES: string }): Promise<{
+      safetyAssessment: string;
+      cost?: number;
+      latency?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+    }> => {
         const handoffStart = now();
         const handoffRefId = uuidv4();
         console.log(`\n🔄 Handoff to Feelings Agent...`);
@@ -1833,6 +1862,11 @@ ${args.NOTES}`;
           const feelingsOutputTokens = feelingsUsage?.outputTokens || feelingsUsage?.completion_tokens || feelingsUsage?.completionTokens;
           const feelingsTotalTokens = feelingsUsage?.totalTokens || feelingsUsage?.total_tokens;
           
+          // Prepare variables for Feelings Agent
+          const feelingsVariables: Record<string, { modality: string; value: string }> = {
+            NOTES: { modality: 'text', value: args.NOTES },
+          };
+          
           // Log LLM span for Feelings Agent - child of agent call span
           logLLMSpan(
             'feelings_agent_llm',
@@ -1849,7 +1883,8 @@ ${args.NOTES}`;
             feelingsOutputTokens,
             feelingsTotalTokens,
             feelingsResult.cost,
-            feelingsResult.latency
+            feelingsResult.latency,
+            feelingsVariables
           );
           
           const handoffEnd = now();
@@ -1876,7 +1911,13 @@ ${args.NOTES}`;
           console.log(`     [SPAN] call_feelings_agent (child of hardcoded_orchestration)`);
           console.log(`     [SPAN] feelings_agent_llm (child of call_feelings_agent)`);
           
-          return safetyAssessment;
+          return {
+            safetyAssessment,
+            cost: feelingsResult.cost,
+            latency: feelingsResult.latency,
+            inputTokens: feelingsInputTokens,
+            outputTokens: feelingsOutputTokens,
+          };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           console.error(`   ✗ Feelings Agent error: ${errorMessage}`);
@@ -1885,7 +1926,16 @@ ${args.NOTES}`;
       };
 
     // Helper function to call Head Coach Agent
-    const callHeadCoachAgent = async (args: { CONTEXT: string; RUN_BLOCK: string; WHAT_TO_COVER: string; WORKOUT_SPLITS: string; FEELINGS_ASSESSMENT: string }, toolStatusTracker: Record<string, 'success' | 'error' | 'timeout' | 'not_called'>) => {
+    const callHeadCoachAgent = async (args: { CONTEXT: string; RUN_BLOCK: string; WHAT_TO_COVER: string; WORKOUT_SPLITS: string; FEELINGS_ASSESSMENT: string }, toolStatusTracker: Record<string, 'success' | 'error' | 'timeout' | 'not_called'>): Promise<{
+      finalPlan: string;
+      actualSystemMessage: string;
+      actualUserMessage: string;
+      actualInputTokens?: number;
+      actualOutputTokens?: number;
+      actualTotalTokens?: number;
+      actualCost?: number;
+      actualLatency?: number;
+    }> => {
         const handoffStart = now();
         const handoffRefId = uuidv4();
         console.log(`\n🔄 Handoff to Head Coach Agent...`);
@@ -1974,6 +2024,15 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
           const actualOutputTokens = usage?.outputTokens || usage?.completion_tokens || usage?.completionTokens;
           const actualTotalTokens = usage?.totalTokens || usage?.total_tokens;
           
+          // Prepare variables for Head Coach Agent
+          const headCoachVariables: Record<string, { modality: string; value: string }> = {
+            CONTEXT: { modality: 'text', value: args.CONTEXT },
+            RUN_BLOCK: { modality: 'text', value: args.RUN_BLOCK },
+            WHAT_TO_COVER: { modality: 'text', value: args.WHAT_TO_COVER },
+            WORKOUT_SPLITS: { modality: 'text', value: args.WORKOUT_SPLITS },
+            FEELINGS_ASSESSMENT: { modality: 'text', value: args.FEELINGS_ASSESSMENT },
+          };
+          
           // Log LLM span for Head Coach Agent
           logLLMSpan(
             'head_coach_agent_llm',
@@ -1990,7 +2049,8 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
             actualOutputTokens,
             actualTotalTokens,
             headCoachResult.cost,
-            headCoachResult.latency
+            headCoachResult.latency,
+            headCoachVariables
           );
           
           const toolExecPhaseEnd = now();
@@ -2030,7 +2090,16 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
           console.log(`     [SPAN] call_head_coach_agent (child of hardcoded_orchestration)`);
           console.log(`     [SPAN] head_coach_agent_llm (child of call_head_coach_agent)`);
           
-          return finalPlan;
+          return {
+            finalPlan,
+            actualSystemMessage: headCoachSystemMessage,
+            actualUserMessage: headCoachUserMessage,
+            actualInputTokens,
+            actualOutputTokens,
+            actualTotalTokens,
+            actualCost: headCoachResult.cost,
+            actualLatency: headCoachResult.latency,
+          };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           console.error(`   ✗ Head Coach Agent error: ${errorMessage}`);
@@ -2043,21 +2112,23 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
     
     // Step 1: Call Fitness Agent
     console.log('\n1️⃣  Calling Fitness Agent...');
-    const workoutPlan = await callFitnessAgent({
+    const fitnessResult = await callFitnessAgent({
       CONTEXT: userInputs.CONTEXT,
       RUN_BLOCK: userInputs.RUN_BLOCK,
       WHAT_TO_COVER: userInputs.WHAT_TO_COVER,
     });
+    const workoutPlan = fitnessResult.workoutPlan;
     
     // Step 2: Call Feelings Agent
     console.log('\n2️⃣  Calling Feelings Agent...');
-    const feelingsAssessment = await callFeelingsAgent({
+    const feelingsResult = await callFeelingsAgent({
       NOTES: userInputs.NOTES,
     });
+    const feelingsAssessment = feelingsResult.safetyAssessment;
     
     // Step 3: Call Head Coach Agent with all inputs
     console.log('\n3️⃣  Calling Head Coach Agent...');
-    finalResponse = await callHeadCoachAgent({
+    const headCoachResult = await callHeadCoachAgent({
       CONTEXT: userInputs.CONTEXT,
       RUN_BLOCK: userInputs.RUN_BLOCK,
       WHAT_TO_COVER: userInputs.WHAT_TO_COVER,
@@ -2065,7 +2136,110 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
       FEELINGS_ASSESSMENT: feelingsAssessment,
     }, toolStatusTracker);
     
+    // Extract actual values from Head Coach Agent call
+    finalResponse = headCoachResult.finalPlan;
+    const actualSystemMessage = headCoachResult.actualSystemMessage;
+    const actualUserMessage = headCoachResult.actualUserMessage;
+    const headCoachInputTokens = headCoachResult.actualInputTokens;
+    const headCoachOutputTokens = headCoachResult.actualOutputTokens;
+    const headCoachTotalTokens = headCoachResult.actualTotalTokens;
+    const actualCostFromGateway = headCoachResult.actualCost;
+    const headCoachLatency = headCoachResult.actualLatency;
+    
     const orchestrationEnd = now();
+    
+    // Add final_response span with Model type and full payload (immediately after orchestration completes)
+    // Use ACTUAL input/output from Head Coach Agent call, not reconstructed values
+    const finalResponseStart = orchestrationStart; // Start from orchestration beginning
+    const finalResponseEnd = orchestrationEnd;
+    
+    // Use actual token counts from Gateway, fallback to estimation if not available
+    const inputTokens = headCoachInputTokens ?? estimateTokens(actualSystemMessage + '\n\n' + actualUserMessage);
+    const outputTokens = headCoachOutputTokens ?? estimateTokens(finalResponse);
+    const totalTokens = headCoachTotalTokens ?? (inputTokens + outputTokens);
+    
+    // Prepare input payload matching Adaline format - use ACTUAL messages from Head Coach Agent call
+    const inputPayload: any = {
+      model: headCoachDeployment.prompt.config.model,
+      max_tokens: headCoachDeployment.prompt.config.settings?.max_output_tokens || headCoachDeployment.prompt.config.settings?.maxTokens || 4096,
+      temperature: headCoachDeployment.prompt.config.settings?.temperature || 1,
+      messages: [
+        {
+          role: 'system',
+          content: [{
+            type: 'text',
+            text: actualSystemMessage,
+          }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: actualUserMessage,
+          }],
+        },
+      ],
+    };
+    
+    // Include other settings if present
+    if (headCoachDeployment.prompt.config.settings?.seed !== undefined) inputPayload.seed = headCoachDeployment.prompt.config.settings.seed;
+    if (headCoachDeployment.prompt.config.settings?.top_p !== undefined) inputPayload.top_p = headCoachDeployment.prompt.config.settings.top_p;
+    
+    // Prepare output payload matching Adaline MessageType format - use ACTUAL output from Head Coach Agent call
+    const outputPayload: any = {
+      messages: [{
+        role: 'assistant',
+        content: [{
+          modality: 'text',
+          value: finalResponse,
+        }],
+      }],
+      tokenUsage: {
+        promptTokens: inputTokens,
+        completionTokens: outputTokens,
+        totalTokens: totalTokens,
+      },
+    };
+    
+    // Add latency if available from Gateway
+    if (headCoachLatency !== undefined) {
+      outputPayload.latency = headCoachLatency;
+    }
+    
+    // Prepare variables for final_response span (all user inputs used in orchestration)
+    const finalResponseVariables: Record<string, { modality: string; value: string }> = {
+      CONTEXT: { modality: 'text', value: userInputs.CONTEXT },
+      RUN_BLOCK: { modality: 'text', value: userInputs.RUN_BLOCK },
+      WHAT_TO_COVER: { modality: 'text', value: userInputs.WHAT_TO_COVER },
+      NOTES: { modality: 'text', value: userInputs.NOTES },
+    };
+    
+    addSpanToTrace({
+      name: 'final_response',
+      status: 'success',
+      referenceId: uuidv4(),
+      parentReferenceId: orchestratorRefId, // Sibling of hardcoded_orchestration, not child
+      startedAt: finalResponseStart,
+      endedAt: finalResponseEnd,
+      content: {
+        type: 'Model',
+        provider: 'openai',
+        model: headCoachDeployment.prompt.config.model,
+        variables: finalResponseVariables,
+        input: inputPayload,
+        output: outputPayload,
+      },
+      promptId: PROMPT_IDS.AGENTIC_RAG,
+      deploymentId: headCoachDeployment.id,
+      runEvaluation: true,
+      cost: actualCostFromGateway, // Use actual cost from Gateway, undefined if not available
+      tokens: {
+        input: inputTokens,
+        output: outputTokens,
+        total: totalTokens,
+      },
+    });
+    console.log(`   [SPAN] final_response (child of multi_agent_orchestrator, sibling of hardcoded_orchestration) - complete multi-agent work`);
     
     // Decision Provenance: Track decision-making process
     const decisionProvenanceStart = now();
@@ -2182,43 +2356,131 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
     const actualChoice = userRequestsRAG ? 'rag_enabled' : 'direct_query';
     const actualLatency = orchestrationEnd - orchestrationStart;
     
-    // Get total cost from all agent calls (simplified - would sum actual costs)
-    const actualCost = 0; // Would sum from fitnessResult.cost + feelingsResult.cost + headCoachResult.cost
+    // Calculate actual total cost from all agent calls
+    const fitnessCost = fitnessResult.cost ?? 0;
+    const feelingsCost = feelingsResult.cost ?? 0;
+    const headCoachCost = actualCostFromGateway ?? 0;
+    const actualCost = fitnessCost + feelingsCost + headCoachCost;
     
-    // Calculate quality score
-    let actualQuality = 0.75; // Default quality
-    if (userRequestsRAG && matches && matches.length > 0) {
-      actualQuality = matches.reduce((sum, m) => sum + (m.score || 0), 0) / matches.length;
-    } else if (finalResponse.length > 200) {
-      actualQuality = Math.min(0.85, 0.65 + (finalResponse.length / 2000) * 0.2);
-    }
+    // Calculate actual total latency from all agent calls
+    const fitnessLatency = fitnessResult.latency ?? 0;
+    const feelingsLatency = feelingsResult.latency ?? 0;
+    const totalAgentLatency = fitnessLatency + feelingsLatency + (headCoachLatency ?? 0);
     
-    // Estimate alternative path metrics
+    // Calculate quality score dynamically based on model output analysis
+    const calculateResponseQuality = (response: string, hasRAG: boolean, retrievalMatches?: any[]): number => {
+      let quality = 0.5; // Base quality
+      
+      // 1. Length analysis (completeness indicator)
+      if (response.length > 100) quality += 0.1;
+      if (response.length > 500) quality += 0.1;
+      if (response.length > 1000) quality += 0.05;
+      
+      // 2. Structure analysis (organization indicator)
+      const hasHeaders = (response.match(/^#{1,3}\s/gm) || []).length;
+      const hasBullets = (response.match(/^[-*•]\s/gm) || []).length;
+      const hasNumbered = (response.match(/^\d+\.\s/gm) || []).length;
+      if (hasHeaders > 0 || hasBullets > 3 || hasNumbered > 3) quality += 0.1;
+      
+      // 3. Content richness (detail indicator)
+      const sentences = response.split(/[.!?]+/).filter(s => s.trim().length > 10);
+      if (sentences.length > 5) quality += 0.05;
+      if (sentences.length > 10) quality += 0.05;
+      
+      // 4. Keyword coverage (relevance indicator)
+      const requiredKeywords = ['plan', 'workout', 'training', 'exercise', 'schedule'];
+      const foundKeywords = requiredKeywords.filter(kw => 
+        response.toLowerCase().includes(kw)
+      ).length;
+      quality += (foundKeywords / requiredKeywords.length) * 0.1;
+      
+      // 5. RAG quality boost (if RAG was used)
+      if (hasRAG && retrievalMatches && retrievalMatches.length > 0) {
+        const avgRetrievalScore = retrievalMatches.reduce((sum, m) => sum + (m.score || 0), 0) / retrievalMatches.length;
+        quality += avgRetrievalScore * 0.1; // Boost based on retrieval quality
+      }
+      
+      // 6. Response coherence (repetition penalty)
+      const words = response.toLowerCase().split(/\s+/);
+      const uniqueWords = new Set(words);
+      const repetitionRatio = uniqueWords.size / words.length;
+      if (repetitionRatio < 0.5) quality -= 0.1; // High repetition reduces quality
+      
+      return Math.min(0.95, Math.max(0.3, quality));
+    };
+    
+    const actualQuality = calculateResponseQuality(finalResponse, userRequestsRAG, matches);
+    
+    // Estimate alternative path metrics dynamically based on actual data
     const alternativeChoice = userRequestsRAG ? 'direct_query' : 'rag_enabled';
     let estimatedLatency = 0;
-    let estimatedAltCost: number | null | undefined = null; // No cost estimation - would need Gateway data
+    let estimatedAltCost: number | null | undefined = null;
     let estimatedQuality = 0;
     
     if (alternativeChoice === 'direct_query') {
-      estimatedLatency = Math.round(actualLatency * 0.3);
-      estimatedAltCost = null;
-      estimatedQuality = Math.max(0.65, actualQuality - 0.15);
+      // Direct query: faster (no RAG retrieval), but potentially lower quality
+      // Estimate: ~60% of current latency (no retrieval overhead)
+      estimatedLatency = Math.round(actualLatency * 0.6);
+      
+      // Cost: same agent costs, but no RAG retrieval cost
+      // If we had RAG retrieval cost, we'd subtract it here
+      estimatedAltCost = actualCost; // Same agent costs
+      
+      // Quality: lower due to lack of context
+      // Estimate based on current quality minus context benefit
+      const contextBenefit = userRequestsRAG && matches && matches.length > 0
+        ? Math.min(0.15, matches.reduce((sum, m) => sum + (m.score || 0), 0) / matches.length * 0.2)
+        : 0.1;
+      estimatedQuality = Math.max(0.4, actualQuality - contextBenefit);
     } else {
-      estimatedLatency = Math.round(actualLatency * 1.5);
-      estimatedAltCost = null;
-      estimatedQuality = Math.min(0.95, actualQuality + 0.12);
+      // RAG enabled: slower (add retrieval), but potentially higher quality
+      // Estimate: ~140% of current latency (add retrieval overhead)
+      estimatedLatency = Math.round(actualLatency * 1.4);
+      
+      // Cost: same agent costs, plus estimated RAG retrieval cost
+      // Estimate RAG cost: ~$0.0001 per query (embedding + retrieval)
+      const estimatedRAGCost = 0.0001;
+      estimatedAltCost = actualCost + estimatedRAGCost;
+      
+      // Quality: higher due to additional context
+      // Estimate based on current quality plus context benefit
+      const contextBenefit = matches && matches.length > 0
+        ? Math.min(0.2, matches.reduce((sum, m) => sum + (m.score || 0), 0) / matches.length * 0.25)
+        : 0.15;
+      estimatedQuality = Math.min(0.95, actualQuality + contextBenefit);
     }
     
-    // Calculate tradeoff (skip cost comparison if we don't have cost data)
-    const costMultiplier = (actualCost > 0 && estimatedAltCost !== null) 
-      ? (actualCost / Math.max(estimatedAltCost, 0.0001)).toFixed(1) 
-      : 'N/A (cost from Gateway only)';
-    const qualityGain = ((actualQuality - estimatedQuality) * 100).toFixed(0);
-    const tradeoffAnalysis = (actualCost > 0 && estimatedAltCost !== null)
-      ? (actualCost > estimatedAltCost
-          ? `Paid ${costMultiplier}x cost for ${qualityGain}% quality ${actualQuality > estimatedQuality ? 'gain' : 'loss'}`
-          : `Saved ${(1 - actualCost / Math.max(estimatedAltCost, 0.0001)).toFixed(1)}x cost with ${qualityGain}% quality ${actualQuality > estimatedQuality ? 'gain' : 'loss'}`)
-      : `Quality ${actualQuality > estimatedQuality ? 'gain' : 'loss'}: ${qualityGain}% (cost comparison unavailable - Gateway only)`;
+    // Calculate tradeoff dynamically based on actual vs estimated metrics
+    const qualityGain = ((actualQuality - estimatedQuality) * 100).toFixed(1);
+    const latencyDiff = actualLatency - estimatedLatency;
+    const latencyDiffPercent = ((latencyDiff / Math.max(estimatedLatency, 1)) * 100).toFixed(0);
+    
+    let tradeoffAnalysis = '';
+    if (actualCost > 0 && estimatedAltCost !== null && estimatedAltCost > 0) {
+      const costDiff = actualCost - estimatedAltCost;
+      const costDiffPercent = ((costDiff / estimatedAltCost) * 100).toFixed(1);
+      const costMultiplier = (actualCost / estimatedAltCost).toFixed(2);
+      
+      if (costDiff > 0) {
+        tradeoffAnalysis = `Paid ${costMultiplier}x cost ($${costDiff.toFixed(6)} more, ${costDiffPercent}% increase)`;
+      } else {
+        tradeoffAnalysis = `Saved ${(1 - actualCost / estimatedAltCost).toFixed(2)}x cost ($${Math.abs(costDiff).toFixed(6)} less, ${Math.abs(parseFloat(costDiffPercent))}% decrease)`;
+      }
+      
+      const qualityGainNum = parseFloat(qualityGain);
+      const latencyDiffPercentNum = parseFloat(latencyDiffPercent);
+      tradeoffAnalysis += ` with ${Math.abs(qualityGainNum).toFixed(1)}% quality ${actualQuality > estimatedQuality ? 'gain' : 'loss'}`;
+      tradeoffAnalysis += ` and ${Math.abs(latencyDiffPercentNum).toFixed(0)}% latency ${latencyDiff > 0 ? 'increase' : 'decrease'}`;
+    } else {
+      // Cost data unavailable, focus on quality and latency
+      const qualityGainNum = parseFloat(qualityGain);
+      const latencyDiffPercentNum = parseFloat(latencyDiffPercent);
+      tradeoffAnalysis = `Quality ${actualQuality > estimatedQuality ? 'gain' : 'loss'}: ${Math.abs(qualityGainNum).toFixed(1)}%`;
+      tradeoffAnalysis += ` | Latency ${latencyDiff > 0 ? 'increase' : 'decrease'}: ${Math.abs(latencyDiffPercentNum).toFixed(0)}%`;
+      if (actualCost > 0) {
+        tradeoffAnalysis += ` | Actual cost: $${actualCost.toFixed(6)}`;
+      }
+    }
     
     addSpanToTrace({
       name: 'counterfactual_analysis',
@@ -2257,88 +2519,6 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
       },
     });
     console.log(`     [SPAN] counterfactual_analysis (child of hardcoded_orchestration)`);
-    
-    // Add final_response span with Model type and full payload
-    const finalResponseStart = orchestrationStart; // Start from orchestration beginning
-    const finalResponseEnd = orchestrationEnd;
-    
-    // Estimate tokens for final response
-    const inputMsgStr = `${userInputs.CONTEXT}\n\n${userInputs.RUN_BLOCK}\n\n${userInputs.WHAT_TO_COVER}\n\n${userInputs.NOTES}`;
-    const inputTokens = estimateTokens(inputMsgStr);
-    const outputTokens = estimateTokens(finalResponse);
-    const totalTokens = inputTokens + outputTokens;
-    // Cost should come from actual Gateway responses - collect from all agent calls
-    // For now, we'll leave it undefined if not available from Gateway
-    const actualCostFromGateway = undefined; // Would need to aggregate from fitnessResult, feelingsResult, headCoachResult
-    
-    // Prepare input payload matching Adaline format
-    const inputPayload: any = {
-      model: headCoachDeployment.prompt.config.model,
-      max_tokens: headCoachDeployment.prompt.config.settings?.max_output_tokens || headCoachDeployment.prompt.config.settings?.maxTokens || 4096,
-      temperature: headCoachDeployment.prompt.config.settings?.temperature || 1,
-      messages: [
-        {
-          role: 'system',
-          content: [{
-            type: 'text',
-            text: headCoachSystemMessage,
-          }],
-        },
-        {
-          role: 'user',
-          content: [{
-            type: 'text',
-            text: `Build a plan for: ${userInputs.RUN_BLOCK}\nInclude only: ${userInputs.WHAT_TO_COVER}\nContext: ${userInputs.CONTEXT}\nWorkout regime: ${workoutPlan}\nNotes: ${feelingsAssessment}`,
-          }],
-        },
-      ],
-    };
-    
-    // Include other settings if present
-    if (headCoachDeployment.prompt.config.settings?.seed !== undefined) inputPayload.seed = headCoachDeployment.prompt.config.settings.seed;
-    if (headCoachDeployment.prompt.config.settings?.top_p !== undefined) inputPayload.top_p = headCoachDeployment.prompt.config.settings.top_p;
-    
-    // Prepare output payload matching Adaline MessageType format
-    const outputPayload = {
-      messages: [{
-        role: 'assistant',
-        content: [{
-          modality: 'text',
-          value: finalResponse,
-        }],
-      }],
-      tokenUsage: {
-        promptTokens: inputTokens,
-        completionTokens: outputTokens,
-        totalTokens: totalTokens,
-      },
-    };
-    
-    addSpanToTrace({
-      name: 'final_response',
-      status: 'success',
-      referenceId: uuidv4(),
-      parentReferenceId: orchestratorRefId, // Sibling of hardcoded_orchestration, not child
-      startedAt: finalResponseStart,
-      endedAt: finalResponseEnd,
-      content: {
-        type: 'Model',
-        provider: 'openai',
-        model: headCoachDeployment.prompt.config.model,
-        input: inputPayload,
-        output: outputPayload,
-      },
-      promptId: PROMPT_IDS.AGENTIC_RAG,
-      deploymentId: headCoachDeployment.id,
-      runEvaluation: true,
-      cost: actualCostFromGateway, // Use actual cost from Gateway, undefined if not available
-      tokens: {
-        input: inputTokens,
-        output: outputTokens,
-        total: totalTokens,
-      },
-    });
-    console.log(`   [SPAN] final_response (child of multi_agent_orchestrator, sibling of hardcoded_orchestration) - complete multi-agent work`);
     
     // Retrieval Utilization Analysis: Track which chunks were actually used
     // This should come AFTER final_response exists, but be a child of rag_phase
