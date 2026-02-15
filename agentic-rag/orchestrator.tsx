@@ -4,14 +4,14 @@ import { nutrition_planner, weather_checker } from './tool-handler';
 import { Gateway } from '@adaline/gateway';
 import { Config, MessageType } from '@adaline/types';
 import { getDeploymentInfo, PROMPT_ID, PROJECT_ID, PROMPT_IDS, fetchDeployedPrompt, extractSystemMessage, extractUserMessage } from './fetchPayload';
-import { createTrace, addSpan, submitTrace, now, Trace } from './observability';
+import { createTrace, addSpan, submitTrace, now, Trace, registerGetOrCreateTrace } from './observability';
 
 // Global trace to collect all spans
 let globalTrace: Trace | null = null;
 let baseStartTs: number | null = null;
 
-// Normalize trace timestamps to satisfy Adaline validation
-async function safeSubmitTrace(trace: Trace) {
+// Normalize trace timestamps to satisfy Adaline validation (exported for UI/server)
+export async function safeSubmitTrace(trace: Trace) {
   try {
     const spans = ((trace as any).spans || []).filter((s: any) => s);
     const candidateTimes = spans
@@ -61,6 +61,12 @@ async function safeSubmitTrace(trace: Trace) {
   await submitTrace(trace);
 }
 
+/** Reset global trace so the next request gets a fresh trace (e.g. when running from UI server). */
+export function clearTraceForNextRequest() {
+  globalTrace = null;
+  baseStartTs = null;
+}
+
 export function getOrCreateTrace(traceName: string = 'Multi-Agent-RAG'): Trace {
   if (!globalTrace) {
     // Initialize a monotonic base timestamp and create the trace
@@ -71,6 +77,7 @@ export function getOrCreateTrace(traceName: string = 'Multi-Agent-RAG'): Trace {
   }
   return globalTrace;
 }
+registerGetOrCreateTrace(getOrCreateTrace);
 
 export function addSpanToTrace(span: any) {
   const trace = getOrCreateTrace();
@@ -1362,12 +1369,13 @@ export async function orchestrateMultiAgentWithHandoffs(
   let status: 'success' | 'error' = 'success';
   let finalResponse = '';
 
-  // Add parent span early so child spans can reference it
+  // Add parent span early so child spans can reference it.
+  // Only set parentReferenceId when CLI root span exists (cliOrchestratorRefId), so UI/server submissions don't reference a missing span.
   addSpanToTrace({
     name: 'multi_agent_orchestrator',
     status: 'success', // Will be updated in finally block
     referenceId: orchestratorRefId,
-    parentReferenceId: cliOrchestratorRefId,
+    ...(cliOrchestratorRefId && { parentReferenceId: cliOrchestratorRefId }),
     startedAt: orchestratorStart,
     endedAt: orchestratorStart, // Will be updated in finally block
     content: {
@@ -2107,23 +2115,22 @@ Notes: ${args.FEELINGS_ASSESSMENT}`;
         }
       };
 
-    // Step 7: Execute hardcoded orchestration (sequential)
+    // Step 7: Execute hardcoded orchestration (Fitness + Feelings in parallel, then Head Coach)
     console.log('\n▶️  Executing Hardcoded Orchestration...');
     
-    // Step 1: Call Fitness Agent
-    console.log('\n1️⃣  Calling Fitness Agent...');
-    const fitnessResult = await callFitnessAgent({
-      CONTEXT: userInputs.CONTEXT,
-      RUN_BLOCK: userInputs.RUN_BLOCK,
-      WHAT_TO_COVER: userInputs.WHAT_TO_COVER,
-    });
+    // Steps 1 & 2: Call Fitness and Feelings in parallel (both use Adaline Gateway via callLLMViaGateway)
+    console.log('\n1️⃣  Calling Fitness and Feelings agents in parallel...');
+    const [fitnessResult, feelingsResult] = await Promise.all([
+      callFitnessAgent({
+        CONTEXT: userInputs.CONTEXT,
+        RUN_BLOCK: userInputs.RUN_BLOCK,
+        WHAT_TO_COVER: userInputs.WHAT_TO_COVER,
+      }),
+      callFeelingsAgent({
+        NOTES: userInputs.NOTES,
+      }),
+    ]);
     const workoutPlan = fitnessResult.workoutPlan;
-    
-    // Step 2: Call Feelings Agent
-    console.log('\n2️⃣  Calling Feelings Agent...');
-    const feelingsResult = await callFeelingsAgent({
-      NOTES: userInputs.NOTES,
-    });
     const feelingsAssessment = feelingsResult.safetyAssessment;
     
     // Step 3: Call Head Coach Agent with all inputs

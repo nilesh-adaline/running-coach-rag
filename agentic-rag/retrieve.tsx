@@ -3,8 +3,18 @@ import { Pinecone } from '@pinecone-database/pinecone';
 import { Gateway } from '@adaline/gateway';
 import { Config } from '@adaline/types';
 import { readFile, readdir } from 'fs/promises';
+import { existsSync } from 'fs';
 const pdfParse: any = require('pdf-parse');
 import path from 'path';
+
+function getDataDir(): string {
+  const cwd = process.cwd();
+  const candidates = [path.join(cwd, 'data'), path.join(cwd, '..', 'data')];
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return path.join(cwd, 'data');
+}
 import { PROMPT_ID } from './fetchPayload';
 import { addSpan, Trace } from './observability';
 
@@ -229,7 +239,7 @@ export async function retrieveTopK(k = 10, trace?: Trace, fullPromptOverride?: s
 // Read a chunk's content from a source file in ./data (supports .mdx and .pdf)
 export async function readChunkContent(fileName: string, chunkNum: number, chunkSize = 800) {
   try {
-    const filePath = path.join(process.cwd(), 'data', fileName);
+    const filePath = path.join(getDataDir(), fileName);
     let doc = '';
     if (fileName.toLowerCase().endsWith('.pdf')) {
       const buf = await readFile(filePath);
@@ -270,7 +280,7 @@ export async function parseMatchMetadata(match: any): Promise<{ fileName?: strin
       const idx = Number(idMatch[2]);
 
       try {
-        const dataDir = path.join(process.cwd(), 'data');
+        const dataDir = getDataDir();
         const files = await readdir(dataDir);
         const found = files.find((f) => path.basename(f, path.extname(f)) === base || f.startsWith(base));
         if (found) fileName = found;

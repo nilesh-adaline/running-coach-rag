@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <script>
+    (function() {
+      var t = localStorage.getItem('agentic-rag-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Running Coach App — Training Plan</title>
+  <style>
+    /* Dark theme (default) */
+    :root, html[data-theme="dark"] {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4f;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --error: #f85149;
+    }
+    /* Light theme */
+    html[data-theme="light"] {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --border: #d0d7de;
+      --text: #1f2328;
+      --muted: #656d76;
+      --accent: #0969da;
+      --success: #1a7f37;
+      --error: #cf222e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    .container { max-width: 720px; margin: 0 auto; }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+      color: var(--text);
+    }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    input, textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    .row { display: flex; gap: 1rem; }
+    .row > * { flex: 1; }
+    button {
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 6px;
+      padding: 0.6rem 1.25rem;
+      font-size: 0.95rem;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 0.5rem;
+    }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #result {
+      word-break: break-word;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      min-height: 120px;
+    }
+    #result.empty { color: var(--muted); }
+    #result.error { color: var(--error); }
+    #result.success { color: var(--text); }
+    /* Formatted plan output (no raw markdown) */
+    #result.plan-output { white-space: normal; }
+    #result.plan-output .plan-section { margin-bottom: 1.25rem; }
+    #result.plan-output .plan-section:last-child { margin-bottom: 0; }
+    #result.plan-output .plan-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 0 0 0.5rem;
+      padding-bottom: 0.25rem;
+    }
+    #result.plan-output .plan-subtitle {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0.75rem 0 0.35rem;
+    }
+    #result.plan-output .plan-body { margin: 0; color: var(--text); }
+    #result.plan-output ul, #result.plan-output ol {
+      margin: 0.5rem 0 0 1.25rem;
+      padding: 0;
+    }
+    #result.plan-output li { margin-bottom: 0.35rem; }
+    #result.plan-output p { margin: 0.5rem 0 0; }
+    #result.plan-output p:first-child { margin-top: 0; }
+    .status {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+    }
+    .status.loading { color: var(--accent); }
+    .status.error { color: var(--error); }
+    .status.success { color: var(--success); }
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .header-row h1 { margin: 0; }
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.2rem;
+    }
+    .theme-toggle button {
+      margin: 0;
+      padding: 0.35rem 0.65rem;
+      font-size: 0.8rem;
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .theme-toggle button:hover { color: var(--text); }
+    .theme-toggle button.active {
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .preset-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .preset-row label { margin: 0; font-size: 0.85rem; }
+    .preset-row select {
+      padding: 0.35rem 0.6rem;
+      font-size: 0.85rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .processing-bar {
+      display: none;
+      margin-top: 0.75rem;
+      margin-bottom: 0.5rem;
+      height: 4px;
+      background: var(--surface);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .processing-bar.visible { display: block; }
+    .processing-bar .bar {
+      height: 100%;
+      width: 40%;
+      background: var(--accent);
+      border-radius: 4px;
+      animation: processing 1.2s ease-in-out infinite;
+    }
+    @keyframes processing {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-row">
+      <div>
+        <h1>Running Coach App</h1>
+      </div>
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        <button type="button" id="theme-light" aria-pressed="false">Light</button>
+        <button type="button" id="theme-dark" aria-pressed="true">Dark</button>
+      </div>
+    </div>
+
+    <form id="form" class="card">
+      <div class="preset-row">
+        <label for="preset">Load example:</label>
+        <select id="preset">
+          <option value="">— Select —</option>
+          <option value="tempo">Tempo run (8km, nutrition & hydration)</option>
+          <option value="beginner">Beginner (30 min easy, first 5K)</option>
+          <option value="recovery">Recovery (post-long run, taper)</option>
+          <option value="trail">Trail (12km hilly, ultra prep)</option>
+        </select>
+      </div>
+      <div class="card" style="margin-bottom: 1rem;">
+        <label for="CONTEXT">Context (goals, pace, climate, diet, etc.)</label>
+        <textarea id="CONTEXT" name="CONTEXT" placeholder="e.g. Half marathon prep, tempo 4:30/km, hot climate, vegan, no injuries..." required></textarea>
+      </div>
+      <div class="row">
+        <div class="card" style="margin-bottom: 1rem;">
+          <label for="RUN_BLOCK">Run block</label>
+          <input type="text" id="RUN_BLOCK" name="RUN_BLOCK" placeholder="e.g. 8km tempo Thursday 5pm" required />
+        </div>
+        <div class="card" style="margin-bottom: 1rem;">
+          <label for="WHAT_TO_COVER">What to cover</label>
+          <input type="text" id="WHAT_TO_COVER" name="WHAT_TO_COVER" placeholder="e.g. Nutrition, Hydration, Recovery" required />
+        </div>
+      </div>
+      <div class="card" style="margin-bottom: 1rem;">
+        <label for="NOTES">Runner notes (feelings, fatigue, niggles)</label>
+        <textarea id="NOTES" name="NOTES" placeholder="e.g. Tired after long run, some knee discomfort, motivated to continue" required></textarea>
+      </div>
+      <button type="submit" id="submitBtn">Generate plan</button>
+      <div class="processing-bar" id="processingBar" role="status" aria-live="polite" aria-label="Processing">
+        <div class="bar"></div>
+      </div>
+      <p class="status" id="status" aria-live="polite"></p>
+    </form>
+
+    <div class="card">
+      <label>Plan</label>
+      <div id="result" class="empty" role="region" aria-label="Training plan output">Submit the form to get your training plan.</div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('form');
+    const resultEl = document.getElementById('result');
+    const statusEl = document.getElementById('status');
+    const submitBtn = document.getElementById('submitBtn');
+    const processingBar = document.getElementById('processingBar');
+
+    (function initTheme() {
+      const key = 'agentic-rag-theme';
+      const stored = localStorage.getItem(key);
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const theme = stored === 'light' || stored === 'dark' ? stored : (prefersDark ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+      document.getElementById('theme-light').setAttribute('aria-pressed', theme === 'light');
+      document.getElementById('theme-dark').setAttribute('aria-pressed', theme === 'dark');
+      document.getElementById('theme-light').classList.toggle('active', theme === 'light');
+      document.getElementById('theme-dark').classList.toggle('active', theme === 'dark');
+      document.getElementById('theme-light').addEventListener('click', () => {
+        document.documentElement.setAttribute('data-theme', 'light');
+        localStorage.setItem(key, 'light');
+        document.getElementById('theme-light').setAttribute('aria-pressed', 'true');
+        document.getElementById('theme-dark').setAttribute('aria-pressed', 'false');
+        document.getElementById('theme-light').classList.add('active');
+        document.getElementById('theme-dark').classList.remove('active');
+      });
+      document.getElementById('theme-dark').addEventListener('click', () => {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        localStorage.setItem(key, 'dark');
+        document.getElementById('theme-dark').setAttribute('aria-pressed', 'true');
+        document.getElementById('theme-light').setAttribute('aria-pressed', 'false');
+        document.getElementById('theme-dark').classList.add('active');
+        document.getElementById('theme-light').classList.remove('active');
+      });
+    })();
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function formatBlock(block) {
+      const lines = block.split('\n');
+      const result = [];
+      let inList = false;
+      let listType = null;
+      let listItems = [];
+      function flushList() {
+        if (!listItems.length) return;
+        const tag = listType === 'ol' ? 'ol' : 'ul';
+        result.push('<' + tag + '>' + listItems.map(li => '<li>' + li + '</li>').join('') + '</' + tag + '>');
+        listItems = [];
+        inList = false;
+      }
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const ulMatch = line.match(/^[\-\*•]\s+(.+)$/);
+        const olMatch = line.match(/^\d+\.\s+(.+)$/);
+        if (ulMatch) {
+          if (inList && listType !== 'ul') flushList();
+          inList = true;
+          listType = 'ul';
+          listItems.push(ulMatch[1]);
+        } else if (olMatch) {
+          if (inList && listType !== 'ol') flushList();
+          inList = true;
+          listType = 'ol';
+          listItems.push(olMatch[1]);
+        } else {
+          flushList();
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const headerLine = trimmed.match(/^#{1,6}\s+(.+)$/);
+          if (headerLine) result.push('<p class="plan-subtitle">' + headerLine[1] + '</p>');
+          else result.push('<p>' + trimmed + '</p>');
+        }
+      }
+      flushList();
+      return result.length ? result.join('') : '<p>' + block + '</p>';
+    }
+
+    /** Strip markdown and convert to clean HTML: sections, lists, bold. No raw ## or **. */
+    function formatPlanText(text) {
+      if (!text || typeof text !== 'string') return '';
+      let s = text.trim();
+      s = escapeHtml(s);
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
+      const blocks = s.split(/\n\n+/);
+      const parts = [];
+      for (let i = 0; i < blocks.length; i++) {
+        const t = blocks[i].trim();
+        if (!t) continue;
+        const headerOnly = /^#{1,3}\s+(.+)$/.exec(t);
+        let title = '';
+        let body = t;
+        if (headerOnly) {
+          title = headerOnly[1];
+          body = '';
+          if (i + 1 < blocks.length && !/^#{1,3}\s/.test(blocks[i + 1].trim())) {
+            body = blocks[i + 1].trim();
+            i++;
+          }
+        } else {
+          const firstLine = t.split('\n')[0] || '';
+          const headerMatch = firstLine.match(/^#{1,3}\s+(.+)$/);
+          if (headerMatch) {
+            title = headerMatch[1];
+            body = t.slice(firstLine.length).trim();
+          }
+        }
+        const html = title
+          ? '<div class="plan-section"><div class="plan-title">' + title + '</div><div class="plan-body">' + formatBlock(body || '') + '</div></div>'
+          : '<div class="plan-section"><div class="plan-body">' + formatBlock(body) + '</div></div>';
+        parts.push(html);
+      }
+      return parts.length ? parts.join('') : '<div class="plan-section"><div class="plan-body">' + formatBlock(s) + '</div></div>';
+    }
+
+    const presets = {
+      tempo: {
+        RUN_BLOCK: "8km tempo run this Thursday at 5:00 PM in Austin, Texas",
+        WHAT_TO_COVER: "Nutrition, During-run Fueling & Hydration, Post-run Recovery Meal",
+        CONTEXT: "Half marathon prep, tempo pace 4:30/km. Running after work, last meal at noon. Hot climate 28-32°C, heavy sweater. Advanced runner, vegan diet, no injuries. RAG",
+        NOTES: "Extremely tired after yesterday's long run. Some knee discomfort but motivated to continue."
+      },
+      beginner: {
+        RUN_BLOCK: "30 min easy run Saturday morning",
+        WHAT_TO_COVER: "Warm-up, pacing, cool-down, stretching",
+        CONTEXT: "First-time 5K runner, building base. Morning runs, mild weather. Sedentary job, beginner fitness. RAG",
+        NOTES: "Feeling a bit nervous about the distance but excited to start."
+      },
+      recovery: {
+        RUN_BLOCK: "45 min recovery jog + 10 min strides",
+        WHAT_TO_COVER: "Recovery nutrition, sleep, foam rolling, when to add intensity",
+        CONTEXT: "Marathon taper week. Easy effort only, low heart rate. Coming off a hard 20-miler 3 days ago. RAG",
+        NOTES: "Legs still heavy, slept poorly. Want to stay loose without overdoing it."
+      },
+      trail: {
+        RUN_BLOCK: "12km trail run Sunday, hilly terrain",
+        WHAT_TO_COVER: "Trail-specific fueling, hydration pack, shoe choice, weather prep",
+        CONTEXT: "Ultra training block. Technical trails, 400m elevation gain. Running in mountains, variable weather. RAG",
+        NOTES: "Ankle felt twingy last week on uneven ground. Otherwise strong."
+      }
+    };
+    const defaultPreset = 'tempo';
+    function loadPreset(key) {
+      const p = presets[key];
+      if (!p) return;
+      Object.keys(p).forEach(k => {
+        const el = document.getElementById(k);
+        if (el) el.value = p[k];
+      });
+    }
+    if (!document.getElementById('CONTEXT')?.value?.trim() && !document.getElementById('RUN_BLOCK')?.value?.trim()) {
+      loadPreset(defaultPreset);
+    }
+    document.getElementById('preset')?.addEventListener('change', (e) => {
+      const v = e.target.value;
+      if (v) loadPreset(v);
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        CONTEXT: form.CONTEXT.value.trim(),
+        RUN_BLOCK: form.RUN_BLOCK.value.trim(),
+        WHAT_TO_COVER: form.WHAT_TO_COVER.value.trim(),
+        NOTES: form.NOTES.value.trim()
+      };
+
+      resultEl.textContent = '';
+      resultEl.className = '';
+      statusEl.textContent = 'Processing…';
+      statusEl.className = 'status loading';
+      submitBtn.disabled = true;
+      if (processingBar) processingBar.classList.add('visible');
+
+      try {
+        const base = window.location.origin;
+        const res = await fetch(base + '/api/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          resultEl.textContent = data.error || res.statusText || 'Request failed';
+          resultEl.className = 'error';
+          statusEl.textContent = 'Error';
+          statusEl.className = 'status error';
+          return;
+        }
+
+        const raw = data.finalResponse || '(empty response)';
+        resultEl.innerHTML = formatPlanText(raw);
+        resultEl.className = 'success plan-output';
+        statusEl.textContent = 'Done.';
+        statusEl.className = 'status success';
+      } catch (err) {
+        resultEl.textContent = err.message || 'Network or server error';
+        resultEl.className = 'error';
+        statusEl.textContent = 'Error';
+        statusEl.className = 'status error';
+      } finally {
+        submitBtn.disabled = false;
+        if (processingBar) processingBar.classList.remove('visible');
+      }
+    });
+  </script>
+</body>
+</html>

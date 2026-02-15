@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { v4 as uuidv4 } from 'uuid';
+import { PROJECT_ID } from './fetchPayload';
 
 const LOGS_BASE = 'https://api.staging.adaline.ai/v2/logs';
 const apiKey = process.env.ADALINE_API_KEY;
@@ -82,6 +83,27 @@ export async function submitTrace(trace: Trace): Promise<void> {
     trace.status = 'error';
   }
 
+  // Adaline: each span's startedAt must be >= trace's startedAt. Normalize before building payload.
+  const spanStarts = trace.spans
+    .map((s) => Number(s.startedAt))
+    .filter((t) => typeof t === 'number' && !Number.isNaN(t));
+  const minStart = spanStarts.length > 0 ? Math.min(...spanStarts) : trace.startedAt;
+  const traceStart = typeof trace.startedAt === 'number' && !Number.isNaN(trace.startedAt)
+    ? Math.min(trace.startedAt, minStart)
+    : minStart;
+  trace.startedAt = traceStart;
+  for (const s of trace.spans) {
+    const start = Number(s.startedAt);
+    if (typeof start !== 'number' || Number.isNaN(start) || start < traceStart) {
+      (s as any).startedAt = traceStart;
+    }
+    const end = Number(s.endedAt);
+    const spanStart = Number((s as any).startedAt);
+    if (typeof end !== 'number' || Number.isNaN(end) || end < spanStart) {
+      (s as any).endedAt = spanStart;
+    }
+  }
+
   const mapStatus = (s: 'success' | 'error'): 'success' | 'failure' => (s === 'success' ? 'success' : 'failure');
 
   const traceEnded = trace.endedAt && trace.endedAt > trace.startedAt ? trace.endedAt : trace.startedAt + 1;
@@ -95,6 +117,9 @@ export async function submitTrace(trace: Trace): Promise<void> {
     attributes: trace.attributes,
     tags: trace.tags,
   };
+
+  // Adaline requires: any span with parentReferenceId must reference another span's referenceId in this trace
+  const validParentIds = new Set(trace.spans.map((s) => s.referenceId));
 
   const spansPayload = trace.spans.map((s) => {
     const c = s.content ?? {};
@@ -161,7 +186,7 @@ export async function submitTrace(trace: Trace): Promise<void> {
       status: mapStatus(s.status),
       content,
       referenceId: s.referenceId,
-      parentReferenceId: s.parentReferenceId,
+      ...(s.parentReferenceId != null && validParentIds.has(s.parentReferenceId) && { parentReferenceId: s.parentReferenceId }),
       promptId: s.promptId,
       deploymentId: s.deploymentId,
       sessionId: s.sessionId,
@@ -259,3 +284,12 @@ export async function submitTrace(trace: Trace): Promise<void> {
 }
 
 export function now() { return Date.now(); }
+
+let _getOrCreateTraceImpl: ((name?: string) => Trace) | null = null;
+export function registerGetOrCreateTrace(fn: (name?: string) => Trace) {
+  _getOrCreateTraceImpl = fn;
+}
+export function getOrCreateTrace(traceName?: string): Trace {
+  if (_getOrCreateTraceImpl) return _getOrCreateTraceImpl(traceName);
+  return createTrace(traceName || 'Multi-Agent-RAG', PROJECT_ID);
+}
